@@ -1,0 +1,14 @@
+@import "tailwindcss";
+
+@theme inline {
+	--font-urbanist: var(--font-urbanist);
+}
+
+:root { color-scheme: dark; }
+* { box-sizing: border-box; }
+body { min-height: 100vh; background: #071019; font-family: var(--font-urbanist), sans-serif; }
+button, input, textarea { font: inherit; }
+button { cursor: pointer; }
+.bento-panel { border: 1px solid rgb(255 255 255 / 0.1); border-radius: 1.5rem; background: rgb(255 255 255 / 0.06); padding: 1.25rem; backdrop-filter: blur(18px); }
+.animate-rise { animation: rise 600ms ease-out both; }
+@keyframes rise { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
