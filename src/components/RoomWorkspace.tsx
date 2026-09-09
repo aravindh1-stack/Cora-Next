@@ -55,7 +55,7 @@ export function RoomWorkspace({ roomCode }: { roomCode: string }) {
     const frame = iframeRef.current;
     if (!playerReadyRef.current || !frame?.contentWindow) return;
     const post = (func: string, args: unknown[] = []) => {
-      frame.contentWindow?.postMessage(JSON.stringify({ event: 'command', func, args }), '*');
+      frame.contentWindow?.postMessage(JSON.stringify({ event: 'command', func, args, id: Date.now() }), 'https://www.youtube.com');
     };
     if (includeSeek) post('seekTo', [Math.max(0, target.timestamp), true]);
     post('setPlaybackRate', [target.playbackRate]);
@@ -79,10 +79,12 @@ export function RoomWorkspace({ roomCode }: { roomCode: string }) {
 
   function handlePlayerReady() {
     playerReadyRef.current = true;
-    iframeRef.current?.contentWindow?.postMessage(JSON.stringify({ event: 'listening', id: 1 }), '*');
-    iframeRef.current?.contentWindow?.postMessage(JSON.stringify({ event: 'command', func: 'addEventListener', args: ['onStateChange'] }), '*');
-    iframeRef.current?.contentWindow?.postMessage(JSON.stringify({ event: 'command', func: 'addEventListener', args: ['onPlaybackRateChange'] }), '*');
-    iframeRef.current?.contentWindow?.postMessage(JSON.stringify({ event: 'command', func: 'addEventListener', args: ['infoDelivery'] }), '*');
+    const frame = iframeRef.current?.contentWindow;
+    const send = (message: object) => frame?.postMessage(JSON.stringify(message), 'https://www.youtube.com');
+    send({ event: 'listening', id: 1 });
+    send({ event: 'command', func: 'addEventListener', args: ['onStateChange'] });
+    send({ event: 'command', func: 'addEventListener', args: ['onPlaybackRateChange'] });
+    send({ event: 'command', func: 'addEventListener', args: ['infoDelivery'] });
     if (pendingTargetRef.current) sendPlayerCommands(pendingTargetRef.current, true);
   }
 
@@ -265,7 +267,9 @@ export function RoomWorkspace({ roomCode }: { roomCode: string }) {
 }
 
 function buildEmbedUrl(media: MediaItem) {
-  return media.provider === 'youtube' ? `${media.embedUrl}?enablejsapi=1&autoplay=0&controls=1` : `${media.embedUrl}?autoplay=0`;
+  if (media.provider !== 'youtube') return `${media.embedUrl}?autoplay=0`;
+  const origin = typeof window === 'undefined' ? '' : `&origin=${encodeURIComponent(window.location.origin)}`;
+  return `${media.embedUrl}?enablejsapi=1&autoplay=0&controls=1${origin}`;
 }
 
 function parseYouTube(value: string): MediaItem | null {
