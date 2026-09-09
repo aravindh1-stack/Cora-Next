@@ -73,6 +73,7 @@ export type Database = {
           title: string | null;
           is_playing: boolean;
           timestamp: number;
+          playback_rate: number;
           updated_at: string;
         };
         Insert: {
@@ -82,6 +83,7 @@ export type Database = {
           title?: string | null;
           is_playing?: boolean;
           timestamp?: number;
+          playback_rate?: number;
           updated_at?: string;
         };
         Update: Partial<Database['public']['Tables']['room_states']['Insert']>;

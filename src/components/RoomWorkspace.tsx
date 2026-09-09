@@ -11,10 +11,10 @@ import { getSupabaseBrowserClient } from '@/lib/supabase';
 
 type Provider = 'youtube' | 'spotify';
 type MediaItem = { provider: Provider; title: string; mediaUrl: string; embedUrl: string; externalUrl: string };
-type PlaybackTarget = { isPlaying: boolean; timestamp: number };
-type RoomStateRow = { room_code: string; current_url: string | null; media_type: Provider | null; title: string | null; is_playing: boolean; timestamp: number };
+type PlaybackTarget = { isPlaying: boolean; timestamp: number; playbackRate: number };
+type RoomStateRow = { room_code: string; current_url: string | null; media_type: Provider | null; title: string | null; is_playing: boolean; timestamp: number; playback_rate?: number };
 type MediaChangePayload = { mediaUrl: string; title: string; mediaType: Provider };
-type PlayPausePayload = { isPlaying: boolean; currentTime: number };
+type PlayPausePayload = { isPlaying: boolean; currentTime: number; playbackRate?: number };
 type SeekPayload = { currentTime: number };
 
 export function RoomWorkspace({ roomCode }: { roomCode: string }) {
@@ -24,6 +24,7 @@ export function RoomWorkspace({ roomCode }: { roomCode: string }) {
   const [media, setMedia] = useState<MediaItem | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [playbackTimestamp, setPlaybackTimestamp] = useState(0);
+  const [playbackRate, setPlaybackRate] = useState(1);
   const [searchError, setSearchError] = useState('');
   const [channelError, setChannelError] = useState('');
   const [copied, setCopied] = useState(false);
@@ -34,18 +35,21 @@ export function RoomWorkspace({ roomCode }: { roomCode: string }) {
   const providerRef = useRef<Provider>('youtube');
   const isPlayingRef = useRef(false);
   const timestampRef = useRef(0);
+  const playbackRateRef = useRef(1);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const playerReadyRef = useRef(false);
   const pendingTargetRef = useRef<PlaybackTarget | null>(null);
   const retryTimerRef = useRef<number | null>(null);
   const retryStartRef = useRef<number | null>(null);
+  const suppressPlayerEventsUntilRef = useRef(0);
 
   useEffect(() => {
     mediaRef.current = media;
     providerRef.current = provider;
     isPlayingRef.current = isPlaying;
     timestampRef.current = playbackTimestamp;
-  }, [media, provider, isPlaying, playbackTimestamp]);
+    playbackRateRef.current = playbackRate;
+  }, [media, provider, isPlaying, playbackTimestamp, playbackRate]);
 
   function sendPlayerCommands(target: PlaybackTarget, includeSeek: boolean) {
     const frame = iframeRef.current;
@@ -54,6 +58,7 @@ export function RoomWorkspace({ roomCode }: { roomCode: string }) {
       frame.contentWindow?.postMessage(JSON.stringify({ event: 'command', func, args }), '*');
     };
     if (includeSeek) post('seekTo', [Math.max(0, target.timestamp), true]);
+    post('setPlaybackRate', [target.playbackRate]);
     post(target.isPlaying ? 'playVideo' : 'pauseVideo');
   }
 
@@ -74,7 +79,41 @@ export function RoomWorkspace({ roomCode }: { roomCode: string }) {
 
   function handlePlayerReady() {
     playerReadyRef.current = true;
+    iframeRef.current?.contentWindow?.postMessage(JSON.stringify({ event: 'listening', id: 1 }), '*');
+    iframeRef.current?.contentWindow?.postMessage(JSON.stringify({ event: 'command', func: 'addEventListener', args: ['onStateChange'] }), '*');
+    iframeRef.current?.contentWindow?.postMessage(JSON.stringify({ event: 'command', func: 'addEventListener', args: ['onPlaybackRateChange'] }), '*');
+    iframeRef.current?.contentWindow?.postMessage(JSON.stringify({ event: 'command', func: 'addEventListener', args: ['infoDelivery'] }), '*');
     if (pendingTargetRef.current) sendPlayerCommands(pendingTargetRef.current, true);
+  }
+
+  function handlePlayerMessage(event: MessageEvent) {
+    if (!event.origin.includes('youtube.com') || typeof event.data !== 'string') return;
+    let message: { event?: string; info?: unknown };
+    try { message = JSON.parse(event.data) as { event?: string; info?: unknown }; } catch { return; }
+    if (message.event !== 'onStateChange' && message.event !== 'onPlaybackRateChange' && message.event !== 'infoDelivery') return;
+
+    if (message.event === 'onPlaybackRateChange' && typeof message.info === 'number') {
+      const nextRate = message.info;
+      setPlaybackRate(nextRate);
+      if (Date.now() < suppressPlayerEventsUntilRef.current) return;
+      broadcast('play_pause', { isPlaying: isPlayingRef.current, currentTime: timestampRef.current, playbackRate: nextRate });
+      void saveRoomState({ room_code: roomCode, current_url: mediaRef.current?.mediaUrl ?? null, media_type: mediaRef.current?.provider ?? null, title: mediaRef.current?.title ?? null, is_playing: isPlayingRef.current, timestamp: timestampRef.current, playback_rate: nextRate });
+      return;
+    }
+
+    const info = message.info as { currentTime?: number } | undefined;
+    const playerState = typeof message.info === 'number' ? message.info : undefined;
+    if (message.event === 'infoDelivery' && typeof info?.currentTime === 'number') {
+      setPlaybackTimestamp(info.currentTime);
+      timestampRef.current = info.currentTime;
+    }
+    if (message.event === 'onStateChange' && (playerState === 1 || playerState === 2)) {
+      const nextPlaying = playerState === 1;
+      setIsPlaying(nextPlaying);
+      if (Date.now() < suppressPlayerEventsUntilRef.current) return;
+      broadcast('play_pause', { isPlaying: nextPlaying, currentTime: timestampRef.current, playbackRate: playbackRateRef.current });
+      void saveRoomState({ room_code: roomCode, current_url: mediaRef.current?.mediaUrl ?? null, media_type: mediaRef.current?.provider ?? null, title: mediaRef.current?.title ?? null, is_playing: nextPlaying, timestamp: timestampRef.current, playback_rate: playbackRateRef.current });
+    }
   }
 
   async function saveRoomState(nextState: RoomStateRow) {
@@ -97,7 +136,9 @@ export function RoomWorkspace({ roomCode }: { roomCode: string }) {
       setProvider(nextState.media_type || 'youtube');
       setIsPlaying(nextState.is_playing);
       setPlaybackTimestamp(nextState.timestamp);
-      reconcilePlayer({ isPlaying: nextState.is_playing, timestamp: nextState.timestamp });
+      setPlaybackRate(nextState.playback_rate ?? 1);
+      suppressPlayerEventsUntilRef.current = Date.now() + 1500;
+      reconcilePlayer({ isPlaying: nextState.is_playing, timestamp: nextState.timestamp, playbackRate: nextState.playback_rate ?? 1 });
       window.setTimeout(() => { remoteUpdateRef.current = false; }, 0);
     }
 
@@ -110,8 +151,8 @@ export function RoomWorkspace({ roomCode }: { roomCode: string }) {
       })
       .on('broadcast', { event: 'play_pause' }, ({ payload }: { payload: PlayPausePayload }) => {
         if (!payload || typeof payload.isPlaying !== 'boolean' || typeof payload.currentTime !== 'number') return;
-        if (payload.isPlaying === isPlayingRef.current && payload.currentTime === timestampRef.current) return;
-        applyRoomState({ room_code: roomCode, current_url: mediaRef.current?.mediaUrl ?? null, media_type: mediaRef.current?.provider ?? null, title: mediaRef.current?.title ?? null, is_playing: payload.isPlaying, timestamp: payload.currentTime });
+        if (payload.isPlaying === isPlayingRef.current && payload.currentTime === timestampRef.current && (payload.playbackRate ?? 1) === playbackRateRef.current) return;
+        applyRoomState({ room_code: roomCode, current_url: mediaRef.current?.mediaUrl ?? null, media_type: mediaRef.current?.provider ?? null, title: mediaRef.current?.title ?? null, is_playing: payload.isPlaying, timestamp: payload.currentTime, playback_rate: payload.playbackRate ?? 1 });
       })
       .on('broadcast', { event: 'seek' }, ({ payload }: { payload: SeekPayload }) => {
         if (!payload || typeof payload.currentTime !== 'number' || payload.currentTime === timestampRef.current) return;
@@ -125,14 +166,17 @@ export function RoomWorkspace({ roomCode }: { roomCode: string }) {
         if (status === 'SUBSCRIBED') {
           channelReadyRef.current = true;
           setChannelError('');
-          void supabase.from('room_states').select('room_code,current_url,media_type,title,is_playing,timestamp').eq('room_code', roomCode).maybeSingle().then(({ data, error }) => {
+          void supabase.from('room_states').select('room_code,current_url,media_type,title,is_playing,timestamp,playback_rate').eq('room_code', roomCode).maybeSingle().then(({ data, error }) => {
             if (error) setChannelError(`Room sync state could not be loaded: ${error.message}`);
             else if (data) applyRoomState(data as RoomStateRow);
           });
         }
       });
 
+      window.addEventListener('message', handlePlayerMessage);
+
     return () => {
+        window.removeEventListener('message', handlePlayerMessage);
       channelReadyRef.current = false;
       channelRef.current = null;
       playerReadyRef.current = false;
@@ -161,26 +205,27 @@ export function RoomWorkspace({ roomCode }: { roomCode: string }) {
     setProvider(parsed.provider);
     setIsPlaying(true);
     setPlaybackTimestamp(0);
-    reconcilePlayer({ isPlaying: true, timestamp: 0 });
-    void saveRoomState({ room_code: roomCode, current_url: parsed.mediaUrl, media_type: parsed.provider, title: parsed.title, is_playing: true, timestamp: 0 });
+    setPlaybackRate(1);
+    reconcilePlayer({ isPlaying: true, timestamp: 0, playbackRate: 1 });
+    void saveRoomState({ room_code: roomCode, current_url: parsed.mediaUrl, media_type: parsed.provider, title: parsed.title, is_playing: true, timestamp: 0, playback_rate: 1 });
     broadcast('media_change', { mediaUrl: parsed.mediaUrl, title: parsed.title, mediaType: parsed.provider });
-    broadcast('play_pause', { isPlaying: true, currentTime: 0 });
-  }
+    broadcast('play_pause', { isPlaying: true, currentTime: 0, playbackRate: 1 });
+    }
 
   function togglePlayback() {
     if (!media) return;
     const nextIsPlaying = !isPlaying;
     setIsPlaying(nextIsPlaying);
-    reconcilePlayer({ isPlaying: nextIsPlaying, timestamp: playbackTimestamp });
-    void saveRoomState({ room_code: roomCode, current_url: media.mediaUrl, media_type: media.provider, title: media.title, is_playing: nextIsPlaying, timestamp: playbackTimestamp });
-    broadcast('play_pause', { isPlaying: nextIsPlaying, currentTime: playbackTimestamp });
+    reconcilePlayer({ isPlaying: nextIsPlaying, timestamp: playbackTimestamp, playbackRate });
+    void saveRoomState({ room_code: roomCode, current_url: media.mediaUrl, media_type: media.provider, title: media.title, is_playing: nextIsPlaying, timestamp: playbackTimestamp, playback_rate: playbackRate });
+    broadcast('play_pause', { isPlaying: nextIsPlaying, currentTime: playbackTimestamp, playbackRate });
   }
 
   function seekMedia(event: React.ChangeEvent<HTMLInputElement>) {
     const currentTime = Number(event.target.value);
     setPlaybackTimestamp(currentTime);
-    reconcilePlayer({ isPlaying, timestamp: currentTime });
-    if (media) void saveRoomState({ room_code: roomCode, current_url: media.mediaUrl, media_type: media.provider, title: media.title, is_playing: isPlaying, timestamp: currentTime });
+    reconcilePlayer({ isPlaying, timestamp: currentTime, playbackRate });
+    if (media) void saveRoomState({ room_code: roomCode, current_url: media.mediaUrl, media_type: media.provider, title: media.title, is_playing: isPlaying, timestamp: currentTime, playback_rate: playbackRate });
     broadcast('seek', { currentTime });
   }
 

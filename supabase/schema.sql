@@ -43,8 +43,11 @@ create table if not exists public.room_states (
   title text,
   is_playing boolean not null default false,
   "timestamp" double precision not null default 0,
+  playback_rate double precision not null default 1,
   updated_at timestamptz not null default now()
 );
+
+alter table public.room_states add column if not exists playback_rate double precision not null default 1;
 
 alter table public.users enable row level security;
 alter table public.rooms enable row level security;
