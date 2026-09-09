@@ -25,7 +25,6 @@ export function RoomWorkspace({ roomCode }: { roomCode: string }) {
   const [isPlaying, setIsPlaying] = useState(false);
   const [playbackTimestamp, setPlaybackTimestamp] = useState(0);
   const [playbackRate, setPlaybackRate] = useState(1);
-  const [soundEnabled, setSoundEnabled] = useState(false);
   const [searchError, setSearchError] = useState('');
   const [channelError, setChannelError] = useState('');
   const [copied, setCopied] = useState(false);
@@ -37,7 +36,6 @@ export function RoomWorkspace({ roomCode }: { roomCode: string }) {
   const isPlayingRef = useRef(false);
   const timestampRef = useRef(0);
   const playbackRateRef = useRef(1);
-  const soundEnabledRef = useRef(false);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const playerReadyRef = useRef(false);
   const pendingTargetRef = useRef<PlaybackTarget | null>(null);
@@ -51,8 +49,7 @@ export function RoomWorkspace({ roomCode }: { roomCode: string }) {
     isPlayingRef.current = isPlaying;
     timestampRef.current = playbackTimestamp;
     playbackRateRef.current = playbackRate;
-    soundEnabledRef.current = soundEnabled;
-  }, [media, provider, isPlaying, playbackTimestamp, playbackRate, soundEnabled]);
+  }, [media, provider, isPlaying, playbackTimestamp, playbackRate]);
 
   function sendPlayerCommands(target: PlaybackTarget, includeSeek: boolean) {
     const frame = iframeRef.current;
@@ -62,7 +59,6 @@ export function RoomWorkspace({ roomCode }: { roomCode: string }) {
     };
     if (includeSeek) post('seekTo', [Math.max(0, target.timestamp), true]);
     post('setPlaybackRate', [target.playbackRate]);
-    post(soundEnabledRef.current ? 'unMute' : 'mute');
     post(target.isPlaying ? 'playVideo' : 'pauseVideo');
   }
 
@@ -87,7 +83,6 @@ export function RoomWorkspace({ roomCode }: { roomCode: string }) {
     iframeRef.current?.contentWindow?.postMessage(JSON.stringify({ event: 'command', func: 'addEventListener', args: ['onStateChange'] }), '*');
     iframeRef.current?.contentWindow?.postMessage(JSON.stringify({ event: 'command', func: 'addEventListener', args: ['onPlaybackRateChange'] }), '*');
     iframeRef.current?.contentWindow?.postMessage(JSON.stringify({ event: 'command', func: 'addEventListener', args: ['infoDelivery'] }), '*');
-    if (!soundEnabledRef.current) iframeRef.current?.contentWindow?.postMessage(JSON.stringify({ event: 'command', func: 'mute', args: [] }), '*');
     if (pendingTargetRef.current) sendPlayerCommands(pendingTargetRef.current, true);
   }
 
@@ -142,7 +137,6 @@ export function RoomWorkspace({ roomCode }: { roomCode: string }) {
       setIsPlaying(nextState.is_playing);
       setPlaybackTimestamp(nextState.timestamp);
       setPlaybackRate(nextState.playback_rate ?? 1);
-      setSoundEnabled(false);
       suppressPlayerEventsUntilRef.current = Date.now() + 1500;
       reconcilePlayer({ isPlaying: nextState.is_playing, timestamp: nextState.timestamp, playbackRate: nextState.playback_rate ?? 1 });
       window.setTimeout(() => { remoteUpdateRef.current = false; }, 0);
@@ -212,7 +206,6 @@ export function RoomWorkspace({ roomCode }: { roomCode: string }) {
     setIsPlaying(true);
     setPlaybackTimestamp(0);
     setPlaybackRate(1);
-    setSoundEnabled(true);
     reconcilePlayer({ isPlaying: true, timestamp: 0, playbackRate: 1 });
     void saveRoomState({ room_code: roomCode, current_url: parsed.mediaUrl, media_type: parsed.provider, title: parsed.title, is_playing: true, timestamp: 0, playback_rate: 1 });
     broadcast('media_change', { mediaUrl: parsed.mediaUrl, title: parsed.title, mediaType: parsed.provider });
@@ -222,7 +215,6 @@ export function RoomWorkspace({ roomCode }: { roomCode: string }) {
   function togglePlayback() {
     if (!media) return;
     const nextIsPlaying = !isPlaying;
-    setSoundEnabled(true);
     setIsPlaying(nextIsPlaying);
     reconcilePlayer({ isPlaying: nextIsPlaying, timestamp: playbackTimestamp, playbackRate });
     void saveRoomState({ room_code: roomCode, current_url: media.mediaUrl, media_type: media.provider, title: media.title, is_playing: nextIsPlaying, timestamp: playbackTimestamp, playback_rate: playbackRate });
@@ -235,12 +227,6 @@ export function RoomWorkspace({ roomCode }: { roomCode: string }) {
     reconcilePlayer({ isPlaying, timestamp: currentTime, playbackRate });
     if (media) void saveRoomState({ room_code: roomCode, current_url: media.mediaUrl, media_type: media.provider, title: media.title, is_playing: isPlaying, timestamp: currentTime, playback_rate: playbackRate });
     broadcast('seek', { currentTime });
-  }
-
-  function enableSound() {
-    setSoundEnabled(true);
-    iframeRef.current?.contentWindow?.postMessage(JSON.stringify({ event: 'command', func: 'unMute', args: [] }), '*');
-    if (isPlaying) iframeRef.current?.contentWindow?.postMessage(JSON.stringify({ event: 'command', func: 'playVideo', args: [] }), '*');
   }
 
   async function copyRoomCode() {
@@ -268,7 +254,7 @@ export function RoomWorkspace({ roomCode }: { roomCode: string }) {
         <div className="mt-8 grid gap-4 xl:grid-cols-[minmax(0,1.5fr)_minmax(20rem,0.75fr)]">
           <section className="overflow-hidden rounded-3xl border border-white/10 bg-black/25 shadow-2xl shadow-black/20">
             <div className="flex items-center justify-between border-b border-white/10 px-5 py-4"><div><p className="text-xs font-bold uppercase tracking-[0.18em] text-slate-500">Now playing</p><h2 className="mt-1 font-semibold text-white">{media?.title ?? 'Your shared screen'}</h2></div>{media && <div className="flex items-center gap-2"><button aria-label={isPlaying ? 'Pause playback' : 'Play playback'} onClick={togglePlayback} className="rounded-full bg-lime-300 p-2 text-slate-950 hover:bg-lime-200">{isPlaying ? <Pause size={15} /> : <Play size={15} fill="currentColor" />}</button><a href={media.externalUrl} target="_blank" rel="noreferrer" className="rounded-full p-2 text-slate-500 hover:bg-white/10 hover:text-white" aria-label="Open media externally"><ExternalLink size={16} /></a></div>}</div>
-            <div className="relative aspect-video bg-[#03070a]">{media ? <><iframe key={media.mediaUrl} ref={iframeRef} onLoad={handlePlayerReady} className="h-full w-full" src={playerUrl} title={media.title} allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture" allowFullScreen />{isPlaying && !soundEnabled && <button onClick={enableSound} className="absolute bottom-4 left-1/2 -translate-x-1/2 rounded-full bg-lime-300 px-4 py-2 text-xs font-bold text-slate-950 shadow-xl hover:bg-lime-200">Enable sound</button>}</> : <div className="grid h-full place-items-center p-8 text-center"><div><div className="mx-auto grid h-14 w-14 place-items-center rounded-2xl border border-white/10 bg-white/[0.05] text-slate-600"><Play size={23} /></div><p className="mt-5 text-sm font-medium text-slate-300">Choose something to play</p><p className="mt-2 text-xs leading-5 text-slate-600">Add a YouTube video or Spotify track from the panel.</p></div></div>}</div>
+            <div className="relative aspect-video bg-[#03070a]">{media ? <iframe key={media.mediaUrl} ref={iframeRef} onLoad={handlePlayerReady} className="h-full w-full" src={playerUrl} title={media.title} allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture" allowFullScreen /> : <div className="grid h-full place-items-center p-8 text-center"><div><div className="mx-auto grid h-14 w-14 place-items-center rounded-2xl border border-white/10 bg-white/[0.05] text-slate-600"><Play size={23} /></div><p className="mt-5 text-sm font-medium text-slate-300">Choose something to play</p><p className="mt-2 text-xs leading-5 text-slate-600">Add a YouTube video or Spotify track from the panel.</p></div></div>}</div>
           </section>
           <aside className="rounded-3xl border border-white/10 bg-white/[0.06] p-5 backdrop-blur-xl"><div className="flex items-center gap-2"><Search size={17} className="text-lime-300" /><h2 className="font-semibold text-white">Add to player</h2></div><div className="mt-5 grid grid-cols-2 rounded-2xl bg-black/20 p-1"><button onClick={() => { setProvider('youtube'); setQuery(''); }} className={`rounded-xl py-2.5 text-sm ${provider === 'youtube' ? 'bg-white/10 font-semibold text-white' : 'text-slate-500'}`}>YouTube</button><button onClick={() => { setProvider('spotify'); setQuery(''); }} className={`rounded-xl py-2.5 text-sm ${provider === 'spotify' ? 'bg-white/10 font-semibold text-white' : 'text-slate-500'}`}>Spotify</button></div><form onSubmit={addMedia} className="mt-5"><label className="text-xs font-medium text-slate-400">{provider === 'youtube' ? 'Video URL or ID' : 'Track URL or ID'}<div className="mt-2 flex gap-2"><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={provider === 'youtube' ? 'youtube.com/watch?v=...' : 'open.spotify.com/track/...'} className="min-w-0 flex-1 rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-xs text-white outline-none placeholder:text-slate-600 focus:border-lime-300/60" /><button aria-label="Play media" className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-lime-300 text-slate-950 hover:bg-lime-200"><Play size={16} fill="currentColor" /></button></div></label>{searchError && <p className="mt-3 rounded-2xl border border-red-300/20 bg-red-300/10 px-3 py-2 text-xs leading-5 text-red-200">{searchError}</p>}</form>{media && <label className="mt-6 block text-xs font-medium text-slate-400">Seek to <span className="font-mono text-slate-500">{playbackTimestamp}s</span><input aria-label="Seek media" type="range" min="0" max="3600" step="1" value={playbackTimestamp} onChange={seekMedia} className="mt-3 w-full accent-lime-300" /></label>}<p className="mt-6 text-xs leading-5 text-slate-600">Playback state is shared with everyone in this room.</p></aside>
         </div>
