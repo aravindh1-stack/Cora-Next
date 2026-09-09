@@ -27,6 +27,7 @@ export function RoomWorkspace({ roomCode }: { roomCode: string }) {
   const [playbackRate, setPlaybackRate] = useState(1);
   const [searchError, setSearchError] = useState('');
   const [channelError, setChannelError] = useState('');
+  const [memberCount, setMemberCount] = useState(1);
   const [copied, setCopied] = useState(false);
   const channelRef = useRef<RealtimeChannel | null>(null);
   const channelReadyRef = useRef(false);
@@ -129,6 +130,16 @@ export function RoomWorkspace({ roomCode }: { roomCode: string }) {
     const channel = supabase.channel(`room:${roomCode}`);
     channelRef.current = channel;
 
+    const refreshPresenceCount = () => {
+      const presence = channel.presenceState() as Record<string, Array<{ userId?: string }>>;
+      const ids = new Set(Object.values(presence).flat().map((entry) => entry.userId).filter(Boolean));
+      setMemberCount(Math.max(1, ids.size));
+    };
+
+    channel.on('presence', { event: 'sync' }, refreshPresenceCount);
+    channel.on('presence', { event: 'join' }, refreshPresenceCount);
+    channel.on('presence', { event: 'leave' }, refreshPresenceCount);
+
     function applyRoomState(nextState: RoomStateRow) {
       const nextMedia = nextState.current_url && nextState.media_type
         ? nextState.media_type === 'youtube' ? parseYouTube(nextState.current_url) : parseSpotify(nextState.current_url)
@@ -163,11 +174,13 @@ export function RoomWorkspace({ roomCode }: { roomCode: string }) {
       .subscribe((status) => {
         if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
           channelReadyRef.current = false;
-          setChannelError('Live playback sync is unavailable.');
+          setChannelError('Live playback sync is reconnecting...');
         }
         if (status === 'SUBSCRIBED') {
           channelReadyRef.current = true;
           setChannelError('');
+          void channel.track({ userId: user?.id ?? 'guest', joinedAt: Date.now() });
+          refreshPresenceCount();
           void supabase.from('room_states').select('room_code,current_url,media_type,title,is_playing,timestamp,playback_rate').eq('room_code', roomCode).maybeSingle().then(({ data, error }) => {
             if (error) setChannelError(`Room sync state could not be loaded: ${error.message}`);
             else if (data) applyRoomState(data as RoomStateRow);
@@ -176,11 +189,24 @@ export function RoomWorkspace({ roomCode }: { roomCode: string }) {
       });
 
       window.addEventListener('message', handlePlayerMessage);
+    const reconnect = () => {
+      if (document.visibilityState === 'visible' || navigator.onLine) {
+        void channel.track({ userId: user?.id ?? 'guest', joinedAt: Date.now() });
+        if (!channelReadyRef.current) channel.subscribe();
+      }
+    };
+    document.addEventListener('visibilitychange', reconnect);
+    window.addEventListener('online', reconnect);
+    window.addEventListener('focus', reconnect);
 
     return () => {
         window.removeEventListener('message', handlePlayerMessage);
+      document.removeEventListener('visibilitychange', reconnect);
+      window.removeEventListener('online', reconnect);
+      window.removeEventListener('focus', reconnect);
       channelReadyRef.current = false;
       channelRef.current = null;
+      setMemberCount(1);
       playerReadyRef.current = false;
       if (retryTimerRef.current) window.clearInterval(retryTimerRef.current);
       if (retryStartRef.current) window.clearTimeout(retryStartRef.current);
@@ -188,7 +214,7 @@ export function RoomWorkspace({ roomCode }: { roomCode: string }) {
     };
     // Refs intentionally keep this room channel stable while playback changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [roomCode, session]);
+  }, [roomCode, session, user]);
 
   function broadcast(event: 'media_change' | 'play_pause' | 'seek', payload: object) {
     if (remoteUpdateRef.current || !channelReadyRef.current || !channelRef.current) return;
@@ -260,7 +286,7 @@ export function RoomWorkspace({ roomCode }: { roomCode: string }) {
           </section>
           <aside className="rounded-3xl border border-white/10 bg-white/[0.06] p-5 backdrop-blur-xl"><div className="flex items-center gap-2"><Search size={17} className="text-lime-300" /><h2 className="font-semibold text-white">Add to player</h2></div><div className="mt-5 grid grid-cols-2 rounded-2xl bg-black/20 p-1"><button onClick={() => { setProvider('youtube'); setQuery(''); }} className={`rounded-xl py-2.5 text-sm ${provider === 'youtube' ? 'bg-white/10 font-semibold text-white' : 'text-slate-500'}`}>YouTube</button><button onClick={() => { setProvider('spotify'); setQuery(''); }} className={`rounded-xl py-2.5 text-sm ${provider === 'spotify' ? 'bg-white/10 font-semibold text-white' : 'text-slate-500'}`}>Spotify</button></div><form onSubmit={addMedia} className="mt-5"><label className="text-xs font-medium text-slate-400">{provider === 'youtube' ? 'Video URL or ID' : 'Track URL or ID'}<div className="mt-2 flex gap-2"><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={provider === 'youtube' ? 'youtube.com/watch?v=...' : 'open.spotify.com/track/...'} className="min-w-0 flex-1 rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-xs text-white outline-none placeholder:text-slate-600 focus:border-lime-300/60" /><button aria-label="Play media" className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-lime-300 text-slate-950 hover:bg-lime-200"><Play size={16} fill="currentColor" /></button></div></label>{searchError && <p className="mt-3 rounded-2xl border border-red-300/20 bg-red-300/10 px-3 py-2 text-xs leading-5 text-red-200">{searchError}</p>}</form>{media && <label className="mt-6 block text-xs font-medium text-slate-400">Seek to <span className="font-mono text-slate-500">{playbackTimestamp}s</span><input aria-label="Seek media" type="range" min="0" max="3600" step="1" value={playbackTimestamp} onChange={seekMedia} className="mt-3 w-full accent-lime-300" /></label>}<p className="mt-6 text-xs leading-5 text-slate-600">Playback state is shared with everyone in this room.</p></aside>
         </div>
-        <section className="mt-4 grid gap-4 md:grid-cols-3"><div className="bento-panel md:col-span-2"><p className="text-xs font-bold uppercase tracking-[0.18em] text-slate-500">Room code</p><div className="mt-3 flex items-center gap-3"><Hash size={18} className="text-lime-300" /><span className="font-mono text-xl tracking-[0.25em] text-white">{roomCode}</span></div></div><div className="bento-panel"><p className="text-xs font-bold uppercase tracking-[0.18em] text-slate-500">Playback</p><p className="mt-3 text-sm text-slate-400">{media ? `${media.provider} ${isPlaying ? 'playing' : 'paused'} at ${playbackTimestamp}s` : 'Waiting for a selection'}</p></div></section>
+        <section className="mt-4 grid gap-4 md:grid-cols-3"><div className="bento-panel md:col-span-2"><div className="flex items-center justify-between"><p className="text-xs font-bold uppercase tracking-[0.18em] text-slate-500">Room code</p><span className="text-xs font-semibold text-lime-300">{memberCount} {memberCount === 1 ? 'member' : 'members'} live</span></div><div className="mt-3 flex items-center gap-3"><Hash size={18} className="text-lime-300" /><span className="font-mono text-xl tracking-[0.25em] text-white">{roomCode}</span></div></div><div className="bento-panel"><p className="text-xs font-bold uppercase tracking-[0.18em] text-slate-500">Playback</p><p className="mt-3 text-sm text-slate-400">{media ? `${media.provider} ${isPlaying ? 'playing' : 'paused'} at ${playbackTimestamp}s` : 'Waiting for a selection'}</p></div></section>
       </div>
     </DashboardLayout>
   );
